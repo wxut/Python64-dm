@@ -1,0 +1,129 @@
+"""DmService32 HTTP客户端 - Python64调用32位大漠服务"""
+import requests
+import subprocess
+import time
+import os
+import psutil
+from typing import Dict, Any, Optional
+
+class DmService32Client:
+    """DmService32 HTTP客户端"""
+    
+    def __init__(self, port: int = 8765):
+        self.port = port
+        self.base_url = f"http://127.0.0.1:{port}"
+        self.service_process = None
+        self.service_exe = os.path.join("bin", "DmService32.exe")
+        
+    def _kill_existing_service(self):
+        """终止已存在的服务进程"""
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                if proc.info['name'] == 'DmService32.exe':
+                    proc.terminate()
+                    proc.wait(timeout=3)
+        except:
+            pass
+    
+    def start_service(self) -> bool:
+        """启动DmService32服务"""
+        try:
+            if not os.path.exists(self.service_exe):
+                print(f"错误: 找不到服务程序 {self.service_exe}")
+                return False
+            
+            # 清理已存在的服务
+            self._kill_existing_service()
+            
+            # 启动服务进程
+            self.service_process = subprocess.Popen(
+                [self.service_exe, str(self.port)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NEW_CONSOLE
+            )
+            
+            # 等待服务启动
+            for _ in range(10):
+                if self.health_check():
+                    return True
+                time.sleep(0.5)
+            
+            return False
+        except Exception as e:
+            print(f"启动服务失败: {e}")
+            return False
+    
+    def is_service_running(self) -> bool:
+        """检查服务是否运行"""
+        return self.service_process and self.service_process.poll() is None and self.health_check()
+    
+    def health_check(self) -> bool:
+        """健康检查"""
+        try:
+            response = requests.get(f"{self.base_url}/health", timeout=2)
+            return response.status_code == 200
+        except:
+            return False
+    
+    def register(self, reg_code: str, ver_info: str = "", 
+                virtual_hardware: Optional[Dict] = None, 
+                proxy_ip: Optional[str] = None) -> Dict[str, Any]:
+        """注册大漠插件"""
+        data = {
+            "reg_code": reg_code,
+            "ver_info": ver_info
+        }
+        
+        if virtual_hardware:
+            data["virtual_hardware"] = virtual_hardware
+        if proxy_ip:
+            data["proxy_ip"] = proxy_ip
+            
+        try:
+            response = requests.post(f"{self.base_url}/register", json=data, timeout=30)
+            return response.json()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def shutdown(self):
+        """关闭服务"""
+        try:
+            requests.post(f"{self.base_url}/shutdown", timeout=5)
+        except:
+            pass
+        
+        if self.service_process:
+            try:
+                self.service_process.wait(timeout=5)
+            except:
+                self.service_process.terminate()
+                try:
+                    self.service_process.wait(timeout=3)
+                except:
+                    self.service_process.kill()
+            self.service_process = None
+        
+        # 确保清理所有相关进程
+        self._kill_existing_service()
+
+# 使用示例
+if __name__ == "__main__":
+    client = DmService32Client()
+    
+    if client.start_service():
+        print("✓ DmService32服务启动成功")
+        
+        # 测试注册
+        result = client.register("your_reg_code_here")
+        if result.get("success"):
+            print(f"✓ 注册成功: {result.get('message')}")
+            print(f"  版本: {result.get('version')}")
+            print(f"  机器码: {result.get('machine_code')}")
+        else:
+            print(f"✗ 注册失败: {result.get('message', result.get('error'))}")
+        
+        client.shutdown()
+        print("✓ 服务已关闭")
+    else:
+        print("✗ 服务启动失败")

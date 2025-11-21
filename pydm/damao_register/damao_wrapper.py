@@ -1,0 +1,96 @@
+"""大漠插件封装模块 - 使用DmService32服务"""
+import sys
+import os
+from typing import Tuple, Optional
+from . import logger
+
+# 添加项目根目录到路径
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from dm_service_client import DmService32Client
+
+
+class DaMaoWrapper:
+    """大漠插件封装 - 使用DmService32服务"""
+    
+    def __init__(self, dll_path: str = "bin/dm.dll", dmreg_path: str = "bin/DmReg.dll"):
+        self.dll_path = dll_path
+        self.dmreg_path = dmreg_path
+        self.log = logger.get_logger()
+        self.service_client = None
+    
+    def setup_no_register(self) -> bool:
+        """设置免COM注册（DmService32自动处理）"""
+        self.log.info("DmService32自动处理免COM注册")
+        return True
+    
+    def register(self, reg_code: str, additional_code: str = "") -> Tuple[int, str]:
+        """注册大漠插件（通过DmService32）"""
+        if not self.service_client:
+            return (-2, "服务客户端未初始化")
+        
+        try:
+            result = self.service_client.register(reg_code, additional_code)
+            
+            # 缓存版本和机器码信息
+            if result.get("version"):
+                self._cached_version = result.get("version")
+            if result.get("machine_code"):
+                self._cached_machine_code = result.get("machine_code")
+            
+            if result.get("success"):
+                self.log.info("大漠插件注册成功")
+                return (1, result.get("message", "注册成功"))
+            else:
+                self.log.error(f"大漠插件注册失败: {result.get('message')}")
+                return (result.get("reg_result", 0), result.get("message", "注册失败"))
+        except Exception as e:
+            self.log.error(f"注册大漠插件异常: {e}")
+            return (-99, f"注册异常: {e}")
+    
+    
+    def create(self) -> bool:
+        """创建大漠对象（通过DmService32）"""
+        try:
+            self.service_client = DmService32Client()
+            if not self.service_client.start_service():
+                self.log.error("启动DmService32服务失败")
+                return False
+            
+            self.log.info("DmService32服务启动成功")
+            return True
+        except Exception as e:
+            self.log.error(f"创建大漠对象失败: {e}")
+            return False
+    
+    def get_version(self) -> str:
+        """获取大漠版本"""
+        if hasattr(self, '_cached_version'):
+            return self._cached_version
+        # 从DmService32获取真实版本
+        return self.service_client.get_version() if self.service_client else "未知版本"
+    
+    def get_machine_code(self) -> str:
+        """获取机器码"""
+        if hasattr(self, '_cached_machine_code'):
+            return self._cached_machine_code
+        # 从DmService32获取真实机器码
+        return self.service_client.get_machine_code() if self.service_client else "未知机器码"
+    
+    def get_cursor_pos(self) -> Tuple[int, int]:
+        """获取鼠标位置"""
+        try:
+            import win32gui
+            return win32gui.GetCursorPos()
+        except Exception as e:
+            self.log.error(f"获取鼠标位置失败: {e}")
+            return (0, 0)
+    
+    def release(self):
+        """释放大漠对象"""
+        if self.service_client:
+            try:
+                self.service_client.shutdown()
+                self.service_client = None
+                self.log.info("释放大漠对象成功")
+            except Exception as e:
+                self.log.error(f"释放大漠对象失败: {e}")

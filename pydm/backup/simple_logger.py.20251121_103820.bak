@@ -1,0 +1,44 @@
+"""简洁的注册日志记录器 - 记录机器码和调用次数"""
+import os
+from datetime import datetime
+
+class SimpleLogger:
+    """简洁日志记录器"""
+    
+    def __init__(self, log_file: str = "logs/simple_register.log"):
+        self.log_file = log_file
+        self.ensure_log_dir()
+        self.machine_counts = {}
+    
+    def ensure_log_dir(self):
+        """确保日志目录存在"""
+        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+    
+    def log_registration(self, machine_code: str):
+        """记录注册 - 格式: 时间戳,机器码,次数"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # 更新计数
+        self.machine_counts[machine_code] = self.machine_counts.get(machine_code, 0) + 1
+        count = self.machine_counts[machine_code]
+        
+        # 读取现有内容
+        lines = []
+        if os.path.exists(self.log_file):
+            with open(self.log_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        
+        # 查找并更新或添加记录
+        found = False
+        for i, line in enumerate(lines):
+            if line.strip() and machine_code in line:
+                lines[i] = f"{timestamp},{machine_code},{count}\n"
+                found = True
+                break
+        
+        if not found:
+            lines.append(f"{timestamp},{machine_code},{count}\n")
+        
+        # 写回文件
+        with open(self.log_file, 'w', encoding='utf-8') as f:
+            f.writelines(lines)

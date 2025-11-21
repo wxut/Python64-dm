@@ -1,0 +1,329 @@
+"""主窗口 - 完整GUI用户体验升级版"""
+import sys
+import os
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QTabWidget, QTextEdit, QPushButton, QLabel,
+                             QLineEdit, QSpinBox, QMessageBox, QStatusBar)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt
+from PyQt5.QtGui import QFont
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
+from damao_register.config_manager import ConfigManager, HWIDProfileManager
+from damao_register.register_loop import RegisterLoop
+from damao_register import logger
+from gui.qt_logger import QTextEditLogger
+from gui.virtual_code_tab import VirtualCodeTab
+from gui.status_monitor import StatusMonitor
+from gui.config_wizard import ConfigWizard
+
+
+class RegisterThread(QThread):
+    """注册线程"""
+    log_signal = pyqtSignal(str)
+    status_signal = pyqtSignal(str, int, int)  # (status, current, total)
+    
+    def __init__(self, register_loop):
+        super().__init__()
+        self.register_loop = register_loop
+    
+    def run(self):
+        self.register_loop.run()
+
+
+class MainWindow(QMainWindow):
+    """主窗口 - 完整GUI用户体验升级版"""
+    
+    def __init__(self):
+        super().__init__()
+        self.config = ConfigManager()
+        self.profile_mgr = HWIDProfileManager()
+        self.register_loop = RegisterLoop(self.config, self.profile_mgr)
+        self.register_thread = None
+        self.qt_logger = None
+        
+        # 检查是否首次启动
+        self.check_first_run()
+        
+        self.init_ui()
+        self.setup_logger()
+        self.load_config()
+    
+    def check_first_run(self):
+        """检查是否首次启动，如果是则显示配置向导"""
+        if not self.config.get_register_code() and self.config.get_machine_count() == 5:
+            wizard = ConfigWizard(self.config)
+            wizard.exec_()
+    
+    def init_ui(self):
+        """初始化UI"""
+        self.setWindowTitle("大漠免COM注册系统 v2.0 - 虚拟机器码版")
+        self.setGeometry(100, 100, 1000, 700)
+        
+        # 设置字体
+        font = QFont()
+        font.setPointSize(9)
+        self.setFont(font)
+        
+        # 中央部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        # 标签页
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+        
+        # 配置标签页
+        config_tab = self.create_config_tab()
+        self.tabs.addTab(config_tab, "⚙️ 配置")
+        
+        # 虚拟机器码管理标签页
+        self.virtual_code_tab = VirtualCodeTab(self.profile_mgr)
+        self.tabs.addTab(self.virtual_code_tab, "🔑 虚拟机器码")
+        
+        # 日志标签页
+        log_tab = self.create_log_tab()
+        self.tabs.addTab(log_tab, "📋 日志")
+        
+        # 状态监控
+        self.status_monitor = StatusMonitor()
+        layout.addWidget(self.status_monitor)
+        
+        # 状态栏
+        self.statusBar = QStatusBar()
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("就绪")
+        
+        # 应用样式
+        self.apply_styles()
+    
+    def create_config_tab(self):
+        """创建配置标签页"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # 注册码设置
+        reg_group = QWidget()
+        reg_layout = QVBoxLayout(reg_group)
+        reg_layout.addWidget(QLabel("<b>注册设置</b>"))
+        
+        reg_code_layout = QHBoxLayout()
+        reg_code_layout.addWidget(QLabel("注册码:"))
+        self.reg_code_edit = QLineEdit()
+        self.reg_code_edit.setPlaceholderText("留空则仅使用基础功能")
+        reg_code_layout.addWidget(self.reg_code_edit)
+        reg_layout.addLayout(reg_code_layout)
+        
+        add_code_layout = QHBoxLayout()
+        add_code_layout.addWidget(QLabel("附加码:"))
+        self.add_code_edit = QLineEdit()
+        self.add_code_edit.setPlaceholderText("可选")
+        add_code_layout.addWidget(self.add_code_edit)
+        reg_layout.addLayout(add_code_layout)
+        
+        layout.addWidget(reg_group)
+        
+        # 机器设置
+        machine_group = QWidget()
+        machine_layout = QVBoxLayout(machine_group)
+        machine_layout.addWidget(QLabel("<b>虚拟机器设置</b>"))
+        
+        count_layout = QHBoxLayout()
+        count_layout.addWidget(QLabel("机器数量:"))
+        self.machine_count_spin = QSpinBox()
+        self.machine_count_spin.setRange(1, 100)
+        count_layout.addWidget(self.machine_count_spin)
+        count_layout.addWidget(QLabel("台"))
+        count_layout.addStretch()
+        machine_layout.addLayout(count_layout)
+        
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("注册间隔:"))
+        self.interval_spin = QSpinBox()
+        self.interval_spin.setRange(1, 120)
+        interval_layout.addWidget(self.interval_spin)
+        interval_layout.addWidget(QLabel("分钟"))
+        interval_layout.addStretch()
+        machine_layout.addLayout(interval_layout)
+        
+        
+        layout.addWidget(machine_group)
+        
+        # 按钮区域
+        button_layout = QHBoxLayout()
+        
+        save_btn = QPushButton("💾 保存配置")
+        save_btn.clicked.connect(self.save_config)
+        button_layout.addWidget(save_btn)
+        
+        wizard_btn = QPushButton("🧙 配置向导")
+        wizard_btn.clicked.connect(self.show_wizard)
+        button_layout.addWidget(wizard_btn)
+        
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+        
+        # 控制按钮
+        control_layout = QHBoxLayout()
+        self.start_btn = QPushButton("▶️ 启动注册")
+        self.start_btn.clicked.connect(self.start_register)
+        self.start_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
+        control_layout.addWidget(self.start_btn)
+        
+        self.stop_btn = QPushButton("⏹️ 停止注册")
+        self.stop_btn.clicked.connect(self.stop_register)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }")
+        control_layout.addWidget(self.stop_btn)
+        
+        layout.addLayout(control_layout)
+        
+        layout.addStretch()
+        return tab
+    
+    def create_log_tab(self):
+        """创建日志标签页"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # 工具栏
+        toolbar = QHBoxLayout()
+        clear_btn = QPushButton("🗑️ 清空日志")
+        clear_btn.clicked.connect(self.clear_log)
+        toolbar.addWidget(clear_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+        
+        # 日志显示
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setFont(QFont("Consolas", 9))
+        layout.addWidget(self.log_text)
+        
+        return tab
+    
+    def setup_logger(self):
+        """设置实时日志"""
+        # 创建Qt日志处理器
+        self.qt_logger = QTextEditLogger(self.log_text)
+        self.qt_logger.setFormatter(logger.get_logger().logger.handlers[0].formatter)
+        
+        # 添加到全局日志器
+        logger.get_logger().logger.addHandler(self.qt_logger)
+    
+    def apply_styles(self):
+        """应用样式表"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f5f5f5;
+            }
+            QTabWidget::pane {
+                border: 1px solid #cccccc;
+                background-color: white;
+            }
+            QTabBar::tab {
+                background-color: #e0e0e0;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: white;
+                border-bottom: 2px solid #2196F3;
+            }
+            QGroupBox {
+                border: 1px solid #cccccc;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QPushButton {
+                border-radius: 4px;
+                padding: 6px 12px;
+            }
+            QPushButton:hover {
+                opacity: 0.8;
+            }
+        """)
+    
+    def load_config(self):
+        """加载配置"""
+        self.machine_count_spin.setValue(self.config.get_machine_count())
+        self.interval_spin.setValue(self.config.get_interval_minutes())
+        self.reg_code_edit.setText(self.config.get_register_code())
+        self.add_code_edit.setText(self.config.get_additional_code())
+    
+    def save_config(self):
+        """保存配置"""
+        self.config.set_machine_count(self.machine_count_spin.value())
+        self.config.set_interval_minutes(self.interval_spin.value())
+        self.config.set_register_code(self.reg_code_edit.text())
+        self.config.set_additional_code(self.add_code_edit.text())
+        QMessageBox.information(self, "成功", "配置已保存")
+        self.statusBar.showMessage("配置已保存", 3000)
+    
+    def show_wizard(self):
+        """显示配置向导"""
+        wizard = ConfigWizard(self.config)
+        if wizard.exec_():
+            self.load_config()
+            self.virtual_code_tab.load_profiles()
+    
+    def clear_log(self):
+        """清空日志"""
+        self.log_text.clear()
+        self.statusBar.showMessage("日志已清空", 3000)
+    
+    def start_register(self):
+        """启动注册"""
+        # 检查配置数量并自动生成
+        current_count = len(self.profile_mgr.get_all_profiles())
+        target_count = self.machine_count_spin.value()
+        
+        if current_count < target_count:
+            # 生成缺少的配置
+            from damao_register.hwid_generator import HWIDGenerator
+            for i in range(target_count - current_count):
+                profile = HWIDGenerator.generate_profile()
+                profile['id'] = current_count + i + 1
+                profile['machine_code'] = '未注册'  # 添加机器码字段
+                self.profile_mgr.add_profile(profile)
+            
+            # 刷新虚拟机器码页面
+            self.virtual_code_tab.load_profiles()
+        
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.status_monitor.set_status("运行中", "green")
+        self.statusBar.showMessage("注册循环已启动")
+        
+        self.register_thread = RegisterThread(self.register_loop)
+        self.register_thread.start()
+    
+    def stop_register(self):
+        """停止注册"""
+        self.register_loop.stop()
+        if self.register_thread:
+            self.register_thread.wait()
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self.status_monitor.set_status("已停止", "orange")
+        self.statusBar.showMessage("注册循环已停止")
+    
+    def closeEvent(self, event):
+        """关闭事件"""
+        if self.register_thread and self.register_thread.isRunning():
+            reply = QMessageBox.question(
+                self, "确认退出",
+                "注册循环正在运行，确定要退出吗？",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply == QMessageBox.Yes:
+                self.stop_register()
+                self.register_loop.cleanup()
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            self.register_loop.cleanup()
+            event.accept()
